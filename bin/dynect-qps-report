@@ -84,6 +84,8 @@ class DynECTQPSReport < Clamp::Command
     "file where to save the CSV report data",
     :default => (ENV['OUTPUT_FILE'] or 'report.csv')
 
+  parameter "ZONE ...", "zones to get host QPS report for"
+
   def execute
     if customer_name == nil
       raise ArgumentError, "missing customer_name"
@@ -94,9 +96,11 @@ class DynECTQPSReport < Clamp::Command
     if password == nil
       raise ArgumentError, "missing password"
     end
-
     if start_time > end_time
       @start_time, @end_time = end_time, start_time
+    end
+    if end_time - start_time > 86400 * 45
+      raise ArgumentError, "report length cannot be more than 45 days"
     end
 
     api = DynECTAPI.new(customer_name, username, password)
@@ -105,8 +109,10 @@ class DynECTQPSReport < Clamp::Command
       :start_ts => start_time.to_i,
       :end_ts => end_time.to_i,
       :breakdown => "hosts",
-      :zones => ["heroku.com", "herokussl.com"]
+      :zones => zone_list
     }
+    Scrolls.log(
+      fn: "qpsreport", zones: zone_list, start: start_time, end: end_time)
     report = api.post '/REST/QPSReport/', params
     Scrolls.log(at: "writing_report", file: output_file)
     File.open(output_file, "w") do |f|

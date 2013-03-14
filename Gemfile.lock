@@ -1,0 +1,12 @@
+GEM
+  remote: http://rubygems.org/
+  specs:
+    excon (0.20.0)
+    json (1.7.7)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  excon
+  json

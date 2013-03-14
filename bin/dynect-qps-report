@@ -1,0 +1,125 @@
+#! /usr/bin/env ruby
+
+require "clamp"
+require "chronic"
+require "excon"
+require "json"
+require "scrolls"
+
+
+class DynECTAPI
+  attr_reader :conn, :headers
+
+  def initialize(customer_name, username, password)
+    @headers = {
+      'Content-Type' => "application/json",
+      'Accept' => "application/json"
+    }
+    @conn = Excon.new("https://api2.dynect.net")
+
+    params = {
+      :customer_name => customer_name,
+      :user_name => username,
+      :password => password
+    }
+
+    session = post('REST/Session', params)
+    @headers['Auth-Token'] = session["token"]
+  end
+
+  def post(path, params)
+    Scrolls.log(fn: "post", path: path) do
+      resp = conn.post(
+        :path => path,
+        :headers => headers,
+        :body => JSON.generate(params))
+      job_start = Time.now
+      if resp.status == 307
+        job_url = resp.body
+        loop do
+          resp = conn.get(:path => job_url, :headers => headers)
+          body = JSON.parse(resp.body)
+          break if body['status'] != "incomplete"
+          Scrolls.log(status: "waiting_for_job", job_id: body['job_id'],
+                      for: Time.now - job_start)
+          sleep(0.5)
+        end
+      end
+
+      body = JSON.parse(resp.body)
+      if body["status"] != "success"
+        Scrolls.log(status: body['status'], msgs: body['msgs'])
+        exit 1
+      end
+      body["data"]
+    end
+  end
+end
+
+class DynECTQPSReport < Clamp::Command
+
+  parse_date = lambda do |s|
+    date = Chronic.parse(s)
+    raise ArgumentError, "invalid date: #{s}" if date == nil
+    date
+  end
+
+  option ['-c', '--customer-name'], "CUSTOMER_NAME", 
+    "the customer name to use for authentication with the DynECT API",
+    :default => ENV['DYNECT_CUSTOMER_NAME']
+  option ['-u', '--username'], "USERNAME",
+    "the username to use for authentication with the DynECT API",
+    :default => ENV['DYNECT_USERNAME']
+  option ['-p', '--password'], "PASSWORD",
+    "the password to use for authentication with the DynECT API",
+    :default => ENV['DYNECT_PASSWORD']
+  option ['-s', '--start-time'], "START_TIME",
+    "start time of the report",
+    :default => (ENV['START_TIME'] or Chronic.parse('one day ago')),
+    &parse_date
+  option ['-e', '--end-time'], "END_TIME",
+    "end time of the report",
+    :default => (ENV['END_TIME'] or Time.now), &parse_date
+  option ['-o', '--output-file'], "OUTPUT_FILE",
+    "file where to save the CSV report data",
+    :default => (ENV['OUTPUT_FILE'] or 'report.csv')
+
+  def execute
+    if customer_name == nil
+      raise ArgumentError, "missing customer_name"
+    end
+    if username == nil
+      raise ArgumentError, "missing username"
+    end
+    if password == nil
+      raise ArgumentError, "missing password"
+    end
+
+    if start_time > end_time
+      @start_time, @end_time = end_time, start_time
+    end
+
+    api = DynECTAPI.new(customer_name, username, password)
+
+    params = {
+      :start_ts => start_time.to_i,
+      :end_ts => end_time.to_i,
+      :breakdown => "hosts",
+      :zones => ["heroku.com", "herokussl.com"]
+    }
+    report = api.post '/REST/QPSReport/', params
+    Scrolls.log(at: "writing_report", file: output_file)
+    File.open(output_file, "w") do |f|
+      f.write(report["csv"])
+    end
+  end
+end
+
+Scrolls.global_context(app: "dynect-qps-report")
+DynECTQPSReport.run
+
+
+
+
+
+
